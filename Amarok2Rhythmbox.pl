@@ -2,6 +2,7 @@
 
 use strict;
 use DBI;
+use XML::LibXML;
 use URI::Escape;
 use utf8;
 
@@ -13,30 +14,25 @@ my $AMAROK_DB_USER     = "amarokuser";
 my $AMAROK_DB_PASSWORD = "amarokpassword";
 my $AMAROK_LIB_BASE    = "./home/simon/Music/";
 
-print "Connecting to Rhythmbox DB...";
-my $dbhRB = DBI->connect('dbi:AnyData(RaiseError=>1):') || die("FAIL\n");
-$dbhRB->func('rb_tracks', 'XML', $RB_DB_FILE, {record_tag => "entry", col_map => ["location", "rating"]}, 'ad_catalog');
+print "Opening Rhythmbox DB... ";
+my $libxml = XML::LibXML->new();
+my $xmlRB  = $libxml->parse_file($RB_DB_FILE);
 print "DONE\n";
 
 print "Connecting to Amarok DB ($AMAROK_DB_NAME, $AMAROK_DB_HOST)...";
-my $dbhAmarok = DBI->connect("dbi:mysql:$AMAROK_DB_NAME", $AMAROK_DB_USER, $AMAROK_DB_PASSWORD, {RaiseError => 0, AutoCommit => 1}) || die("FAIL\n");
-$dbhAmarok->{'mysql_enable_utf8'} = 1;
+my $dbhAmarok = DBI->connect("dbi:mysql:$AMAROK_DB_NAME", $AMAROK_DB_USER, $AMAROK_DB_PASSWORD, {RaiseError => 0, AutoCommit => 1, mysql_enable_utf8 => 1}) || die("FAIL\n");
 $dbhAmarok->do('SET NAMES utf8;');
 print "DONE\n";
 
-print "Fetching Rhythmbox track list...";
-my $sthRBTracks = $dbhRB->prepare("SELECT * FROM rb_tracks") || die("Unable to prepare Rhythmbox tracks select query");
-$sthRBTracks->execute() || die("Unable to execute Rhythmbox tracks select query");
-print "DONE\n";
-
 my $sthAmarokTrack = $dbhAmarok->prepare("SELECT statistics.rating as rating FROM urls JOIN statistics ON urls.id = statistics.url WHERE urls.rpath LIKE ?") || die("Unable to prepare SELECT query for Amarok DB");
-my $sthRBUpdate    = $dbhRB->prepare("UPDATE rb_tracks SET rating = ? WHERE location LIKE ?") || die("Unable to prepare UPDATE statement for Rhythmbox DB");
 
-while (my $row = $sthRBTracks->fetchrow_hashref())
+foreach my $trackRB ($xmlRB->findnodes('/rhythmdb/entry[@type="song"]'))
 {
-	my $uri_rb = $row->{"location"};
+	my $uri_rb = $trackRB->findnodes('./location')->to_literal;
 	my $uri = uri_unescape($uri_rb);
 	$uri =~ s/^$RB_LIB_BASE//;
+	utf8::decode($uri) if (utf8::is_utf8($uri));
+
 	$sthAmarokTrack->bind_param(1, "\%$uri\%");
 	$sthAmarokTrack->execute() || die("Unable to execute Amarok track ID query");
 	if ($sthAmarokTrack->rows > 0)
@@ -44,18 +40,13 @@ while (my $row = $sthRBTracks->fetchrow_hashref())
 		if (my $rowAmarok = $sthAmarokTrack->fetchrow_hashref())
 		{
 			my $rating = $rowAmarok->{'rating'} / 2;
-			print "Updating $uri\t(rating: $rating)... \n";
-			$sthRBUpdate->bind_param(1, $rating);
-			$sthRBUpdate->bind_param(2, $uri_rb);
-			if ($sthRBUpdate->execute())
-			{
-				($sthRBUpdate->rows == 1) ? print "DONE\n" : print "FAIL\n";
-			}
-			else
-			{
-				print STDERR "Error updating $uri\n";
-			}
-			$sthRBUpdate->finish();
+			print "Updating $uri\t(rating: $rating)... ";
+			my($rating_node) = $trackRB->findnodes('./rating');
+			$trackRB->removeChild($rating_node) if (defined($rating_node));
+			$rating_node = $xmlRB->createElement('rating');
+			$rating_node->appendTextNode($rating);
+			$trackRB->appendChild($rating_node);
+			print "DONE\n";
 		}
 		else
 		{
@@ -67,15 +58,17 @@ while (my $row = $sthRBTracks->fetchrow_hashref())
 		print STDERR "Track not found: $uri\n";
 	}
 }
-$sthRBUpdate    = undef;
+
+print "Writing new Rhythmbox DB... ";
+$xmlRB->toFile($RB_DB_FILE);
+print "DONE\n";
+
 $sthAmarokTrack = undef;
-$sthRBTracks    = undef;
 
 print "Closing Amarok DB connection...";
 $dbhAmarok->disconnect();
 print "DONE\n";
 
-print "Closing Rhythmbox DB connection...";
-$dbhRB->disconnect();
-print "DONE\n";
+$xmlRB  = undef;
+$libxml = undef;
 
