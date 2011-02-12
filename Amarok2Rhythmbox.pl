@@ -6,7 +6,7 @@ use XML::LibXML;
 use URI::Escape;
 use utf8;
 
-my $RB_DB_FILE         = "/home/simon/.local/share/rhythmbox/rhythmdb.xml";
+my $RB_DB_FILE         = $ENV{'HOME'} ."/.local/share/rhythmbox/rhythmdb.xml";
 my $RB_LIB_BASE        = "file:///home/simon/Music/";
 my $AMAROK_DB_HOST     = "localhost";
 my $AMAROK_DB_NAME     = "amarokdb";
